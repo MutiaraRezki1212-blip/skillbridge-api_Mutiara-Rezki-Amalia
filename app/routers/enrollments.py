@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
@@ -43,10 +43,14 @@ def create_enrollment(
     db.add(order)
     db.flush()  # agar order.id terisi
 
+    now = datetime.now(timezone.utc)
+
     invoice = Invoice(
         order_id=order.id,
-        invoice_number=f"INV-{datetime.now():%Y%m%d}-{order.id.hex[:8].upper()}",
+        invoice_number=f"INV-{now:%Y%m%d}-{order.id.hex[:8].upper()}",
         amount=course.price,
+        issued_at=now,
+        expired_at=now + timedelta(hours=24),
     )
     enrollment = Enrollment(
         student_id=user.id, course_id=course.id, order_id=order.id,

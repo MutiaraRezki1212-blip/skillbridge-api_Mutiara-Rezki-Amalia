@@ -3,6 +3,9 @@
 Prasyarat: tabel sudah dibuat dan seed sudah dijalankan.
 Jalankan  : pytest -v
 """
+import hashlib
+import hmac
+import json
 import uuid
 
 import pytest
@@ -12,7 +15,23 @@ from app.config import settings
 from app.main import app
 
 client = TestClient(app)
-CALLBACK = {"X-Callback-Token": settings.payment_callback_secret}
+def callback_request(payload):
+    raw_body = json.dumps(payload, separators=(",", ":")).encode()
+    signature = hmac.new(
+        settings.payment_callback_secret.encode(),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    return client.post(
+        "/payments/callback",
+        content=raw_body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Callback-Signature": signature,
+        },
+    )
+
 
 
 def auth(token: str) -> dict:
@@ -41,9 +60,20 @@ def student():
 def course():
     r = client.get("/courses")
     assert r.status_code == 200
-    cid = r.json()["data"][0]["id"]
-    detail = client.get(f"/courses/{cid}").json()["data"]
+
+    courses = r.json()["data"]
+    target = next(
+        (c for c in courses if c["title"] == "REST API dengan FastAPI"),
+        None,
+    )
+    assert target is not None, "Kursus utama tidak ditemukan"
+
+    detail_response = client.get(f"/courses/{target['id']}")
+    assert detail_response.status_code == 200
+
+    detail = detail_response.json()["data"]
     assert len(detail["modules"]) == 4
+
     return detail
 
 
@@ -129,23 +159,27 @@ def test_full_purchase_flow(student, course):
     # callback: token salah / tanpa token / nominal salah
     cb = {"external_ref": pay["external_ref"], "status": "paid", "amount": pay["amount"]}
     assert client.post("/payments/callback", json=cb).status_code == 401
-    assert client.post("/payments/callback", json=cb, headers={"X-Callback-Token": "x"}).status_code == 401
+    assert client.post(
+        "/payments/callback",
+        json=cb,
+        headers={"X-Callback-Signature": "signature-salah"},
+    ).status_code == 401
     bad = {**cb, "amount": "1.00"}
-    assert client.post("/payments/callback", json=bad, headers=CALLBACK).status_code == 422
+    assert callback_request(bad).status_code == 422
     my = client.get("/enrollments/mycourses", headers=h).json()["data"]
     assert my[0]["status"] == "pending_payment"  # belum berubah
 
     # callback paid
-    r = client.post("/payments/callback", json=cb, headers=CALLBACK)
+    r = callback_request(cb)
     assert r.status_code == 200 and r.json()["data"]["status"] == "paid"
 
     # idempotent
-    r = client.post("/payments/callback", json=cb, headers=CALLBACK)
+    r = callback_request(cb)
     assert r.status_code == 200 and "sudah pernah" in r.json()["message"]
 
     my = client.get("/enrollments/mycourses", headers=h).json()["data"]
     assert my[0]["status"] == "active" and my[0]["total_modules"] == 4
-
+    
     # progress 25% -> 100%
     r = client.patch(f"/enrollments/{enrollment_id}/progress", json=progress, headers=h)
     assert r.status_code == 200
@@ -180,11 +214,63 @@ def test_failed_payment_allows_retry(student):
     d = client.post("/enrollments", json={"course_id": new["id"]}, headers=h).json()["data"]
     inv = d["invoice"]["id"]
     p1 = client.post("/payments", json={"invoice_id": inv, "method": "ewallet"}, headers=h).json()["data"]
-    r = client.post(
-        "/payments/callback",
-        json={"external_ref": p1["external_ref"], "status": "failed", "amount": p1["amount"]},
-        headers=CALLBACK,
-    )
+    r = callback_request({
+        "external_ref": p1["external_ref"],
+        "status": "failed",
+        "amount": p1["amount"],
+    })
     assert r.status_code == 200 and r.json()["data"]["status"] == "failed"
     r = client.post("/payments", json={"invoice_id": inv, "method": "ewallet"}, headers=h)
     assert r.status_code == 201  # boleh coba bayar lagi
+
+
+def test_expired_invoice_rejects_paid_callback(student):
+    h = auth(student["token"])
+    inst = login("instructor@skillbridge.id", "Instruktur123!")
+
+    cat = client.get("/courses").json()["data"][0]["category_id"]
+    new = client.post(
+        "/courses",
+        json={
+            "category_id": cat,
+            "title": f"Expired {uuid.uuid4().hex[:5]}",
+            "price": "50000.00",
+        },
+        headers=auth(inst),
+    ).json()["data"]
+
+    enrollment = client.post(
+        "/enrollments",
+        json={"course_id": new["id"]},
+        headers=h,
+    ).json()["data"]
+
+    invoice_id = enrollment["invoice"]["id"]
+    payment = client.post(
+        "/payments",
+        json={"invoice_id": invoice_id, "method": "ewallet"},
+        headers=h,
+    ).json()["data"]
+
+    from sqlalchemy import update
+    from app.database import SessionLocal
+    from app.models import Invoice
+    from datetime import datetime, timedelta, timezone
+
+    with SessionLocal() as db:
+        db.execute(
+            update(Invoice)
+            .where(Invoice.id == uuid.UUID(invoice_id))
+            .values(expired_at=datetime.now(timezone.utc) - timedelta(hours=1))
+        )
+        db.commit()
+
+    callback = {
+        "external_ref": payment["external_ref"],
+        "status": "paid",
+        "amount": payment["amount"],
+    }
+    response = callback_request(callback)
+
+    assert response.status_code == 409
+    assert "kedaluwarsa" in response.json()["message"].lower()

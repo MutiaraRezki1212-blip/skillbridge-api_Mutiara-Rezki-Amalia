@@ -1,8 +1,9 @@
+import hashlib
 import hmac
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -48,17 +49,30 @@ def create_payment(
 
 
 @router.post("/callback", response_model=ApiResponse[PaymentOut])
-def payment_callback(
-    body: PaymentCallbackIn,
-    x_callback_token: str | None = Header(default=None),
+async def payment_callback(
+    request: Request,
+    x_callback_signature: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    # 1) Validasi secret: tanpa ini siapa pun bisa "melunasi" invoice sendiri
-    if not x_callback_token or not hmac.compare_digest(
-        x_callback_token.encode(), settings.payment_callback_secret.encode()
-    ):
-        raise HTTPException(401, "Callback token tidak valid")
+    # 1) Baca isi request asli untuk verifikasi tanda tangan
+    raw_body = await request.body()
 
+    # 2) Hitung tanda tangan HMAC-SHA256
+    expected_signature = hmac.new(
+        settings.payment_callback_secret.encode(),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    # 3) Verifikasi tanda tangan callback
+    if not x_callback_signature or not hmac.compare_digest(
+        x_callback_signature, expected_signature
+    ):
+        raise HTTPException(401, "Signature callback tidak valid")
+
+    # 4) Baca dan validasi data callback
+    body = PaymentCallbackIn.model_validate_json(raw_body)
+    
     # 2) Kunci baris payment agar callback ganda tidak balapan
     payment = db.scalar(
         select(Payment).where(Payment.external_ref == body.external_ref).with_for_update()
@@ -79,20 +93,32 @@ def payment_callback(
         db.commit()
         return ok(payment, "Pembayaran ditandai gagal")
 
-    # 5) PAID: update payment, invoice, order, enrollment secara konsisten (1 transaksi)
+    # 5) Periksa invoice sebelum memproses pembayaran PAID
+    invoice = db.get(Invoice, payment.invoice_id)
     now = datetime.now(timezone.utc)
+
+    if invoice.expired_at is not None:
+        expired_at = invoice.expired_at
+        if expired_at.tzinfo is None:
+            expired_at = expired_at.replace(tzinfo=timezone.utc)
+
+        if now >= expired_at:
+            raise HTTPException(409, "Invoice sudah kedaluwarsa")
+
+    # 6) PAID: update semua status dalam satu transaksi
     payment.status = "paid"
     payment.paid_at = now
 
-    invoice = db.get(Invoice, payment.invoice_id)
     invoice.status = "paid"
     invoice.paid_at = now
 
     order = db.get(Order, invoice.order_id)
     order.status = "paid"
 
-    enrollment = db.scalar(select(Enrollment).where(Enrollment.order_id == order.id))
+    enrollment = db.scalar(
+        select(Enrollment).where(Enrollment.order_id == order.id)
+    )
     enrollment.status = "active"
 
-    db.commit()  # semua berhasil, atau semua dibatalkan
+    db.commit()
     return ok(payment, "Pembayaran berhasil, enrollment aktif")

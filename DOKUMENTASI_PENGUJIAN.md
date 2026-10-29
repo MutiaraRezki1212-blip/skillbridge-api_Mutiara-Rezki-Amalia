@@ -12,6 +12,8 @@
 
 Pengujian dilakukan untuk memastikan endpoint API SkillBridge berjalan sesuai fungsinya, termasuk autentikasi, pembatasan akses pengguna, pendaftaran kursus, pembayaran, callback pembayaran, dan progres pembelajaran.
 
+Pengujian juga mencakup validasi signature callback menggunakan HMAC-SHA256 serta pemeriksaan masa berlaku invoice.
+
 ## 3. Hasil Pengujian Manual
 
 | No. | Skenario Pengujian | Hasil Aktual | Status |
@@ -28,37 +30,60 @@ Pengujian dilakukan untuk memastikan endpoint API SkillBridge berjalan sesuai fu
 | 10 | Registrasi dengan password terlalu pendek | HTTP 422, validasi gagal | Berhasil |
 | 11 | Mengakses kursus menggunakan ID bukan UUID | HTTP 422, validasi gagal | Berhasil |
 | 12 | Membuat pembayaran | HTTP 201, pembayaran berstatus pending | Berhasil |
-| 13 | Callback tanpa token rahasia | HTTP 401, callback ditolak | Berhasil |
-| 14 | Callback dengan nominal salah | HTTP 422, nominal ditolak | Berhasil |
-| 15 | Callback pembayaran berhasil | HTTP 200, pembayaran diproses | Berhasil |
-| 16 | Callback pembayaran duplikat | HTTP 200, callback tidak diproses ulang | Berhasil |
-| 17 | Memperbarui progres modul | HTTP 200, progres menjadi 25% | Berhasil |
+| 13 | Callback tanpa signature | HTTP 401, callback ditolak | Berhasil |
+| 14 | Callback dengan signature tidak valid | HTTP 401, callback ditolak | Berhasil |
+| 15 | Callback dengan nominal salah | HTTP 422, nominal ditolak | Berhasil |
+| 16 | Callback pembayaran berhasil | HTTP 200, pembayaran diproses | Berhasil |
+| 17 | Callback pembayaran duplikat | HTTP 200, callback tidak diproses ulang | Berhasil |
+| 18 | Memperbarui progres modul | HTTP 200, progres menjadi 25% | Berhasil |
+
+*Catatan: tabel ini merangkum hasil pengujian yang telah dilakukan. Skenario signature yang salah juga diperiksa melalui pengujian otomatis.*
 
 ## 4. Verifikasi Database
 
-Pemeriksaan melalui PostgreSQL menunjukkan bahwa kedua transaksi yang diuji memiliki status order, invoice, dan payment `paid`, serta enrollment `active`.
+Pemeriksaan melalui PostgreSQL menunjukkan bahwa transaksi yang diuji memiliki status order, invoice, dan payment `paid`, serta enrollment `active`.
 
 Pemeriksaan kolom `password_hash` pada akun pengujian menunjukkan bahwa nilai yang tersimpan berbeda dari password aslinya, sehingga password tidak disimpan sebagai teks biasa.
 
-Pengujian progres juga menunjukkan bahwa satu dari empat modul yang diselesaikan menghasilkan persentase progres sebesar 25%.
+Pengujian progres juga menunjukkan bahwa penyelesaian satu dari empat modul menghasilkan persentase progres sebesar 25%.
 
 ## 5. Hasil Pengujian Otomatis
 
 Pengujian otomatis dilakukan menggunakan perintah:
 
-`python -m pytest -v`
+```bash
+python -m pytest -v
+```
 
-Hasil pengujian:
+Hasil pengujian terakhir:
 
-- Jumlah tes: 7
-- Tes berhasil: 7
-- Tes gagal: 0
-- Waktu pengujian: 3,79 detik
+- **Jumlah tes:** 8
+- **Tes berhasil:** 8
+- **Tes gagal:** 0
+- **Tes error:** 0
+- **Waktu pengujian:** 4,13 detik
 
-Seluruh tujuh tes otomatis yang dijalankan berstatus `PASSED`.
+Seluruh delapan tes otomatis berstatus `PASSED`.
+
+Pengujian otomatis mencakup:
+
+1. Registrasi pengguna dan penolakan data duplikat.
+2. Validasi input.
+3. Kesalahan autentikasi.
+4. Pembatasan hak akses berdasarkan peran.
+5. Validasi pencarian kursus.
+6. Alur pembelian dan pembayaran.
+7. Pembayaran gagal dan percobaan ulang.
+8. Penolakan callback pembayaran ketika invoice sudah kedaluwarsa.
+
+Pengujian callback juga menggunakan signature HMAC-SHA256 yang dihitung dari raw body permintaan. Signature yang tidak valid ditolak dengan HTTP 401, sedangkan nominal pembayaran yang tidak sesuai ditolak dengan HTTP 422.
+
+Pengujian invoice kedaluwarsa memastikan callback pembayaran ditolak dengan HTTP 409.
 
 ## 6. Kesimpulan
 
-Berdasarkan pengujian manual yang telah dilakukan dan tujuh pengujian otomatis yang berhasil, fungsi utama SkillBridge API yang diuji berjalan sesuai dengan hasil yang diharapkan. Pengujian mencakup autentikasi, validasi input, pembatasan akses, enrollment, pembayaran, callback, dan progres pembelajaran.
+Berdasarkan hasil pengujian manual dan delapan pengujian otomatis yang berhasil, fungsi utama SkillBridge API yang telah diuji berjalan sesuai dengan hasil yang diharapkan.
 
-Pengujian menggunakan koleksi Insomnia dan pemeriksaan seluruh endpoint tetap perlu dikonfirmasi untuk memastikan semua kebutuhan pengujian proyek telah terpenuhi.
+Pengujian mencakup autentikasi, validasi input, pembatasan akses, enrollment, pembayaran, verifikasi signature callback, pemeriksaan kedaluwarsa invoice, dan progres pembelajaran.
+
+Pengujian menggunakan koleksi Insomnia dan pemeriksaan seluruh endpoint masih perlu diselesaikan atau dikonfirmasi untuk memastikan seluruh kebutuhan pengujian proyek telah terpenuhi.
