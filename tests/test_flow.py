@@ -58,20 +58,12 @@ def student():
 
 @pytest.fixture(scope="module")
 def course():
-    r = client.get("/courses")
-    assert r.status_code == 200
+    course_id = "7c346ca6-6ce8-45fb-b215-d6a24e740328"
 
-    courses = r.json()["data"]
-    target = next(
-        (c for c in courses if c["title"] == "REST API dengan FastAPI"),
-        None,
-    )
-    assert target is not None, "Kursus utama tidak ditemukan"
+    r = client.get(f"/courses/{course_id}")
+    assert r.status_code == 200, r.text
 
-    detail_response = client.get(f"/courses/{target['id']}")
-    assert detail_response.status_code == 200
-
-    detail = detail_response.json()["data"]
+    detail = r.json()["data"]
     assert len(detail["modules"]) == 4
 
     return detail
@@ -128,6 +120,65 @@ def test_course_lookup_errors():
     assert client.get(f"/courses/{uuid.uuid4()}").status_code == 404
     assert client.get("/courses/abc").status_code == 422
 
+def test_course_modules_are_ordered(course):
+    r = client.get(f"/courses/{course['id']}/modules")
+
+    assert r.status_code == 200, r.text
+
+    modules = r.json()["data"]
+
+    assert len(modules) == 4
+
+    positions = [module["position"] for module in modules]
+    assert positions == [1, 2, 3, 4]
+
+def test_update_course_role_and_ownership(course):
+    instructor = login(
+        "instructor@skillbridge.id",
+        "Instruktur123!"
+    )
+    admin = login(
+        "admin@skillbridge.id",
+        "Admin123!"
+    )
+
+    # 1. Instructor memperbarui kursus miliknya sendiri
+    r = client.patch(
+        f"/courses/{course['id']}",
+        json={"description": "Deskripsi diperbarui oleh Instructor"},
+        headers=auth(instructor),
+    )
+    assert r.status_code == 200, r.text
+
+    # 2. Admin membuat kursus miliknya sendiri
+    r = client.post(
+        "/courses",
+        json={
+            "category_id": course["category_id"],
+            "title": f"Kursus Admin {uuid.uuid4().hex[:6]}",
+            "description": "Kursus untuk pengujian hak akses.",
+            "price": "100000.00",
+        },
+        headers=auth(admin),
+    )
+    assert r.status_code == 201, r.text
+    admin_course_id = r.json()["data"]["id"]
+
+    # 3. Instructor tidak boleh mengubah kursus milik Admin
+    r = client.patch(
+        f"/courses/{admin_course_id}",
+        json={"title": "Percobaan oleh Instructor"},
+        headers=auth(instructor),
+    )
+    assert r.status_code == 403
+
+    # 4. Admin boleh mengubah kursus milik Instructor
+    r = client.patch(
+        f"/courses/{course['id']}",
+        json={"description": "Deskripsi diperbarui oleh Admin"},
+        headers=auth(admin),
+    )
+    assert r.status_code == 200, r.text
 
 def test_full_purchase_flow(student, course):
     h = auth(student["token"])
@@ -155,6 +206,11 @@ def test_full_purchase_flow(student, course):
     assert r.status_code == 201, r.text
     pay = r.json()["data"]
     assert client.post("/payments", json={"invoice_id": invoice_id, "method": "qris"}, headers=h).status_code == 409
+    
+    # pemilik pembayaran dapat melihat detail pembayaran
+    r = client.get(f"/payments/{pay['id']}", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["id"] == pay["id"]
 
     # callback: token salah / tanpa token / nominal salah
     cb = {"external_ref": pay["external_ref"], "status": "paid", "amount": pay["amount"]}
@@ -199,6 +255,12 @@ def test_full_purchase_flow(student, course):
     r = client.patch(f"/enrollments/{enrollment_id}/progress", json=progress, headers=auth(other))
     assert r.status_code == 404
     r = client.post("/payments", json={"invoice_id": invoice_id, "method": "qris"}, headers=auth(other))
+    assert r.status_code == 404
+    # mahasiswa lain tidak boleh melihat pembayaran ini
+    r = client.get(
+        f"/payments/{pay['id']}",
+        headers=auth(other),
+    )
     assert r.status_code == 404
 
 

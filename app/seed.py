@@ -8,34 +8,84 @@ from app.security import hash_password
 def run():
     db = SessionLocal()
     try:
-        if db.scalar(select(User).where(User.email == "admin@skillbridge.id")):
-            print("Seed sudah pernah dijalankan.")
-            return
-
-        admin = User(full_name="Admin SkillBridge", email="admin@skillbridge.id",
-                     password_hash=hash_password("Admin123!"), role="admin")
-        instructor = User(full_name="Instruktur Satu", email="instructor@skillbridge.id",
-                          password_hash=hash_password("Instruktur123!"), role="instructor")
-        category = Category(name="Backend Development")
-        db.add_all([admin, instructor, category])
-        db.flush()
-
-        course = Course(
-            category_id=category.id, instructor_id=instructor.id,
-            title="REST API dengan FastAPI",
-            description="Dari nol sampai API siap produksi.",
-            price=150000,
+        admin = db.scalar(
+            select(User).where(User.email == "admin@skillbridge.id")
         )
-        db.add(course)
-        db.flush()
+        
+        if admin is None:
+            admin = User(
+                full_name="Admin SkillBridge",
+                email="admin@skillbridge.id",
+                password_hash=hash_password("Admin123!"),
+                role="admin",
+            )
+            db.add(admin)
 
-        titles = ["Pengenalan REST", "Routing dan Validasi", "Database dan ORM", "Autentikasi JWT"]
-        db.add_all(
-            CourseModule(course_id=course.id, title=t, position=i)
-            for i, t in enumerate(titles, start=1)
+        instructor = db.scalar(
+            select(User).where(User.email == "instructor@skillbridge.id")
         )
+
+        if instructor is None:
+            instructor = User(
+                full_name="Instruktur Satu",
+                email="instructor@skillbridge.id",
+                password_hash=hash_password("Instruktur123!"),
+                role="instructor",
+            )
+            db.add(instructor)
+        category = db.scalar(
+            select(Category).where(Category.name == "Backend Development")
+        )
+
+        if category is None:
+            category = Category(name="Backend Development")
+            db.add(category)
+            db.flush()
+
+        course = db.scalar(
+            select(Course).where(
+                Course.title.startswith("REST API dengan FastAPI")
+            )
+        )
+
+        if course is None:
+            course = Course(
+                category_id=category.id,
+                instructor_id=instructor.id,
+                title="REST API dengan FastAPI",
+                description="Dari nol sampai API siap produksi.",
+                price=150000,
+            )
+            db.add(course)
+            db.flush()
+
+        titles = [
+            "Pengenalan REST",
+            "Routing dan Validasi",
+            "Database dan ORM",
+            "Autentikasi JWT",
+        ]
+
+        for i, title in enumerate(titles, start=1):
+            module = db.scalar(
+                select(CourseModule).where(
+                    CourseModule.course_id == course.id,
+                    CourseModule.position == i,
+                )
+            )
+
+            if module is None:
+                db.add(
+                    CourseModule(
+                        course_id=course.id,
+                        title=title,
+                        position=i,
+                    )
+                )
+
         db.commit()
-        print("Seed berhasil.")
+        print("Seed berhasil atau data yang hilang telah dilengkapi.")
+        
     finally:
         db.close()
 

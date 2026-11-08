@@ -6,8 +6,16 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.deps import authorize_role
-from app.models import Category, Course, User
-from app.schemas import ApiResponse, CourseCreateIn, CourseDetailOut, CourseOut, ok
+from app.models import Category, Course, CourseModule, User
+from app.schemas import (
+    ApiResponse,
+    CourseCreateIn,
+    CourseUpdateIn,
+    CourseDetailOut,
+    CourseOut,
+    ModuleOut,
+    ok,
+)
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
 
@@ -40,6 +48,23 @@ def get_course(course_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(404, "Kursus tidak ditemukan")
     return ok(course)
 
+@router.get("/{course_id}/modules", response_model=ApiResponse[list[ModuleOut]])
+def get_course_modules(
+    course_id: uuid.UUID,
+    db: Session = Depends(get_db),
+):
+    course = db.get(Course, course_id)
+
+    if course is None or not course.is_published:
+        raise HTTPException(404, "Kursus tidak ditemukan")
+
+    modules = db.scalars(
+        select(CourseModule)
+        .where(CourseModule.course_id == course_id)
+        .order_by(CourseModule.position.asc())
+    ).all()
+
+    return ok(modules)
 
 @router.post("", status_code=201, response_model=ApiResponse[CourseOut])
 def create_course(
@@ -53,3 +78,39 @@ def create_course(
     db.add(course)
     db.commit()
     return ok(course, "Kursus berhasil dibuat")
+
+@router.patch("/{course_id}", response_model=ApiResponse[CourseOut])
+def update_course(
+    course_id: uuid.UUID,
+    body: CourseUpdateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(authorize_role("instructor", "admin")),
+):
+    course = db.get(Course, course_id)
+
+    if course is None:
+        raise HTTPException(404, "Kursus tidak ditemukan")
+
+    # Instructor hanya boleh mengubah kursus miliknya sendiri
+    if user.role == "instructor" and course.instructor_id != user.id:
+        raise HTTPException(403, "Tidak boleh mengubah kursus milik instructor lain")
+
+    update_data = body.model_dump(exclude_unset=True)
+
+    if not update_data:
+        raise HTTPException(422, "Tidak ada data yang diperbarui")
+
+    if any(value is None for value in update_data.values()):
+        raise HTTPException(422, "Nilai pembaruan tidak boleh null")
+
+    if "category_id" in update_data:
+        if db.get(Category, update_data["category_id"]) is None:
+            raise HTTPException(404, "Kategori tidak ditemukan")
+
+    for key, value in update_data.items():
+        setattr(course, key, value)
+
+    db.commit()
+    db.refresh(course)
+
+    return ok(course, "Kursus berhasil diperbarui")
