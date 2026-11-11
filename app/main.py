@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.routers import auth, courses, enrollments, payments
+from app.routers import auth, courses, enrollments, payments, course_users
 
 app = FastAPI(title="SkillBridge API", version="1.0.0")
 
@@ -19,6 +19,7 @@ app.include_router(auth.router)
 app.include_router(courses.router)
 app.include_router(enrollments.router)
 app.include_router(payments.router)
+app.include_router(course_users.router)
 
 
 # Semua error dipaksa ke format: {message, data, errors}

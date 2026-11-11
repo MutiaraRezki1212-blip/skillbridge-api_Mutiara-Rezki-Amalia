@@ -3,7 +3,7 @@ import hmac
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,6 +65,7 @@ def get_payment(
 @router.post("/callback", response_model=ApiResponse[PaymentOut])
 async def payment_callback(
     request: Request,
+    body: PaymentCallbackIn = Body(...),
     x_callback_signature: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
